@@ -4,6 +4,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "type": "module",
+  "logos": {
+    "bootstrap": "./bootstrap.js"
+  },
   "dependencies": {
     "better-sqlite3": "^12.5.0",
     "dockerode": "5.0.0",

@@ -22,3 +22,6 @@ __pycache__/
 *.pyc
 .bak*/
 *.bak
+
+/agent.config.json
+/agent.config.json.*.tmp

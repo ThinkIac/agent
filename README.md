@@ -75,3 +75,11 @@ A lista é um inventário estático e pode incluir registros em testes; não gar
 
 Há imports relativos para diretórios superiores. A instalação isolada e a composição por perfil precisam resolver esses vínculos antes de remover a cópia da base.
 
+
+### Configuração inicial em perfis ThinkIac
+
+A extensão `logos.bootstrap` do Agent cria `agent.config.json` no primeiro boot
+do pacote. Ela preserva qualquer configuração existente. Para habilitar o pool
+ThinkIac, forneça `THINKIAC_API_KEY` ou `LLM_PROXY_TOKEN` pelo ambiente.
+`GATEWAY_URL` permite configurar o endereço do gateway. Sem token, o pool
+ThinkIac fica ausente da configuração gerada.
