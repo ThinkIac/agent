@@ -537,6 +537,9 @@
                     thinkingExpanded: false,
                     ...copyMessageTiming(item.raw),
                 });
+            } else if (item.raw.turnUpdateId) {
+                flushGroup();
+                merged.push(processAssistantMessage({ ...item.raw, content: item.content, streaming: false }));
             } else {
                 assistantGroup.push(item);
             }
@@ -1039,6 +1042,12 @@
         if (event === "start") {
             loadingMap = { ...loadingMap, [sid]: true };
             updateSessionHistory(sid, ensureStreamingAssistant);
+        } else if (event === "assistant_message") {
+            updateSessionHistory(sid, (hist) => {
+                if (hist.some(message => message.turnUpdateId === data.turnUpdateId)) return hist;
+                return insertUserMessage(hist, processAssistantMessage({ ...data, streaming: false }));
+            });
+            if (sid === sessionId) listRef?.scrollBottom();
         } else if (event === "user_message") {
             // Confirmação de mensagem enviada: consome o eco otimista local,
             // desmarca queued, ou anexa (mensagem vinda de outra aba/replay)
