@@ -21,7 +21,8 @@ import {
   getScheduledTasks, getSession
 } from '../memory/session.js'
 import { maybeTitleSession } from './session_title.js'
-import { getSessionSettings, DEFAULT_CONFIRMATION_MESSAGE } from './session_settings.js'
+import { sendDuringTurn } from './session_channel.js'
+import { getSessionSettings, sessionPreferencePools, DEFAULT_CONFIRMATION_MESSAGE } from './session_settings.js'
 import { notifySessionsUpdated } from './chat_bus.js'
 import { listConnectedFronts } from './chat_bus.js'
 import { contextRefiner } from './context_refiner.js'
@@ -1212,6 +1213,7 @@ export async function runAgent(message, sessionId = 'default', onProgress = null
   activeSessions.add(sessionId)
 
   let durableRun
+  let observingProgress = false
   let reusedUserMessage = false
   let earlyUserMessage = false
   try {
@@ -1337,10 +1339,26 @@ export async function runAgent(message, sessionId = 'default', onProgress = null
     }
 
     durableRuns.checkpoint(durableRunId, { phase: opts.resume ? 'resumed' : 'context-ready', iteration: 0 })
+    let progressPrivacy
+    const { privacyForSession } = await import('../../maltese/lib/session.js').catch(error => {
+      if (error.code !== 'ERR_MODULE_NOT_FOUND' || !error.message.includes('/maltese/lib/session.js')) throw error
+      return { privacyForSession: () => null }
+    })
+    const progress = await $('agent:progress', {
+      phase: 'start', sessionId, signal: abortSignal,
+      pools: sessionPreferencePools,
+      objective: () => {
+        progressPrivacy = privacyForSession(sessionId)
+        const text = String(finalMessage).slice(0, 3000)
+        return progressPrivacy ? progressPrivacy.protectText(text) : text
+      },
+      deliver: text => sendDuringTurn(sessionId, progressPrivacy ? progressPrivacy.revealText(text) : text, abortSignal),
+    }).catch(() => null)
+    observingProgress = progress?.observing === true
     const response = await agentLoop(builtSystem.prompt, sessionId, onProgress, abortSignal, durableRunId, {
       recoveryTool: opts.recoveryTool,
       recoveryNotice: opts.recoveryNotice,
-    }, { cwd: opts.cwd, model: opts.model, requiredTools: opts.requiredTools, skillRequiredTools: builtSystem.skillRequiredTools, toolMode: opts.toolMode, toolAllowlist: opts.toolAllowlist, scopedTools: opts.scopedTools, onWork: opts.onWork, governance: opts.governance, maxActions: opts.maxActions, origin: opts.origin, presenceKind: opts.presenceKind, allowApprovedAction: opts.allowApprovedAction,
+    }, { observingProgress, progressPrivacy, cwd: opts.cwd, model: opts.model, requiredTools: opts.requiredTools, skillRequiredTools: builtSystem.skillRequiredTools, toolMode: opts.toolMode, toolAllowlist: opts.toolAllowlist, scopedTools: opts.scopedTools, onWork: opts.onWork, governance: opts.governance, maxActions: opts.maxActions, origin: opts.origin, presenceKind: opts.presenceKind, allowApprovedAction: opts.allowApprovedAction,
       protectedSkillNames: builtSystem.inputTrace?.sources?.filter(source => source.type === 'agent_md' && source.activation === 'explicit_development').map(source => source.name).filter(Boolean) || [] });
 
     const resolvedModel = _resolvedModels.get(sessionId) || null
@@ -1369,6 +1387,7 @@ export async function runAgent(message, sessionId = 'default', onProgress = null
       const { finishSessionTraces } = await import('../../android-device/lib/action-trace.js');
       await finishSessionTraces(sessionId);
     } catch { /* O registro Android não bloqueia a conclusão do agente. */ }
+    if (observingProgress) await $('agent:progress', { phase: 'finish', sessionId }).catch(() => {})
     $('agent:finally', state);
     activeSessions.delete(sessionId)
   }
@@ -1541,6 +1560,17 @@ async function callWithSpecialistFallback(callFn, baseOpts, modelSpec) {
 async function agentLoop(system, sessionId, onProgress = null, abortSignal = null, durableRunId = null, recovery = {}, execution = {}) {
   const maxIterations = _maxIterOverrides.get(sessionId) ?? getMaxIterations()
   let iterations = 0
+  let progressIteration = 0
+  function noteProgress(tool, status, result) {
+    if (!execution.observingProgress || !tool) return
+    // Deliver evidence during provider streams, which may contain many tools
+    // without returning control to the outer iteration loop.
+    let text = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+    const privacy = execution.progressPrivacy
+    if (privacy) text = privacy.protectText(text)
+    const step = { iteration: progressIteration, tool, status, result: text.slice(0, 4000), coverage: 'partial' }
+    void $('agent:progress', { phase: 'step', sessionId, steps: [step] }).catch(() => {})
+  }
   let emptyRetries = 0
   const watchdog = new SessionWatchdog()
   const meta = getMetacognition()
@@ -1751,6 +1781,7 @@ async function agentLoop(system, sessionId, onProgress = null, abortSignal = nul
     })
     durableRuns.toolCompleted(durableRunId, tc.id, outcome)
     if (kernelStarted && !blocked) coordinator.transition('checkpointed', { phase: 'tool-completed', iteration: iterations, ...correlation, ok: outcome.ok })
+    noteProgress(tc.name, outcome.ok ? 'completed' : 'failed', result)
     $('agent:tool-end', { sessionId, iteration: iterations, tool: tc.name, result, outcome, is_error, durationMs, ...correlation, correlation })
     return { blocked, confirmation, outcome, correlation }
   }
@@ -1822,6 +1853,12 @@ async function agentLoop(system, sessionId, onProgress = null, abortSignal = nul
     coordinator.transition('model-selected', { iteration: iterations })
     durableRuns.checkpoint(durableRunId, { phase: 'llm-started', iteration: iterations })
     $('agent:iteration-start', { sessionId, iteration: iterations, maxIterations });
+    if (execution.observingProgress) {
+      await $('agent:progress', {
+        phase: 'iteration', sessionId, iteration: ++progressIteration, steps: [],
+      }).catch(() => {})
+      checkAborted()
+    }
 
     await refreshRuntimeTools()
 
@@ -2027,6 +2064,7 @@ async function agentLoop(system, sessionId, onProgress = null, abortSignal = nul
             
             onProgress: (evt) => {
               if (evt.type === 'tool-step' || evt.type === 'tool-result' || evt.type === 'reasoning') iterationProducedOutput = true
+              if (evt.type === 'tool-result') noteProgress(evt.name, evt.isError ? 'failed' : 'returned a result', evt.content)
               if (evt.type === 'tool-result' && evt.threadId && evt.itemId) recordBagEvent(getConfig(), durableRuns.get(durableRunId), {
                 key: `codex:${evt.threadId}:${evt.itemId}:result`, type: 'tool_result',
                 payload: { callId: evt.itemId, tool: evt.name, result: evt.content, coverage: 'partial', epistemicStatus: 'observed' },

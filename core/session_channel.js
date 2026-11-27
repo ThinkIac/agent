@@ -90,3 +90,14 @@ export async function sendToSession(sessionId, content, role = 'assistant') {
 
   return out
 }
+
+// Mensagem autônoma durante um turno. O stream principal conserva seu cursor
+// e só publica done quando a resposta principal termina.
+export async function sendDuringTurn(sessionId, content, signal) {
+  const { pushMessageAsync } = await import('../memory/session.js')
+  const { emit } = await import('../routes/chat.js')
+  if (signal?.aborted) return
+  const message = { role: 'assistant', content, turnUpdateId: randomUUID(), createdAt: new Date().toISOString() }
+  await pushMessageAsync(sessionId, message)
+  emit(sessionId, 'assistant_message', message)
+}

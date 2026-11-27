@@ -109,3 +109,11 @@ export function saveConfirmationSettings(values = {}, deps = {}) {
   }, deps)
   return { ...settings.confirmation, options: settings.options }
 }
+
+// Projetar somente os campos de roteamento necessários às extensões.
+export function sessionPreferencePools(config = safeConfig()) {
+  return (config.llm?.pools || []).map(({ id, name, provider, enabled, model, models }) => ({
+    id, name, provider, enabled, model,
+    models: Array.isArray(models) ? models.map(entry => typeof entry === 'string' ? entry : entry?.id) : [],
+  }))
+}
