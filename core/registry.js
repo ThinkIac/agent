@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from '
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { runInSandbox }  from './sandbox.js'
+import { getRuntimeExecutionContext } from './runtime_execution_context.js'
 
 const PKG_DIR    = dirname(fileURLToPath(import.meta.url))
 const AGENT_DIR = resolve(PKG_DIR, '..')
@@ -35,6 +36,7 @@ export function deleteTool(name) {
 }
 
 export async function invokeTool(name, input = {}) {
+  getRuntimeExecutionContext()?.signal?.throwIfAborted()
   const e = registry.get(name)
   if (!e) throw new Error(`Tool "${name}" not found`)
   return await e.fn(input)

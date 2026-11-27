@@ -17,6 +17,7 @@
 
 
 import { spawn } from 'node:child_process'
+import { processGroupOptions, terminateProcessTree } from './process_tree.js'
 import { classifyCliFailure, describeCliFailure } from './cli_failures.js'
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -139,12 +140,15 @@ export function execCliProvider({
     return Promise.reject(new Error('[cli_exec] "bin" é obrigatório (nome do binário CLI)'))
   }
 
+  if (signal?.aborted) return Promise.reject(Object.assign(new Error('Generation aborted by user'), { name: 'AbortError' }))
+
   const commandExecuted = [bin, ...args].join(' ')
 
   return new Promise((resolve, reject) => {
     let child
     try {
       child = spawn(bin, args, {
+        ...processGroupOptions,
         cwd: cwd || undefined,
         env: env ? { ...process.env, ...env } : process.env,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -162,16 +166,18 @@ export function execCliProvider({
     let settled = false
     let timedOut = false
     let externallyAborted = false
+    let termination = null
 
     const finish = (fn) => { if (!settled) { settled = true; fn() } }
 
     const hasTimeout = timeoutMs != null && Number.isFinite(timeoutMs) && timeoutMs > 0
     const timeoutHandle = hasTimeout
-      ? setTimeout(() => { timedOut = true; child.kill('SIGTERM') }, timeoutMs)
+      ? setTimeout(() => { timedOut = true; termination ||= terminateProcessTree(child) }, timeoutMs)
       : null
 
-    const onAbort = () => { externallyAborted = true; child.kill('SIGTERM') }
+    const onAbort = () => { externallyAborted = true; termination ||= terminateProcessTree(child) }
     if (signal) signal.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
 
     const cleanup = () => {
       if (timeoutHandle) clearTimeout(timeoutHandle)
@@ -200,8 +206,9 @@ export function execCliProvider({
       })
     })
 
-    child.on('close', (code, killSignal) => {
+    child.on('close', async (code, killSignal) => {
       cleanup()
+      await termination
       finish(() => {
         const out = stdout.toString('utf8').trim()
         const err = stderr.toString('utf8').trim()
@@ -223,6 +230,7 @@ export function execCliProvider({
         wrapped.stderr = err
         wrapped.stdout = out
         wrapped.killed = timedOut || externallyAborted
+        if (externallyAborted) { wrapped.name = 'AbortError'; wrapped.noRetry = true }
         wrapped.signal = killSignal || null
         wrapped.failureKind = kind
         wrapped.account = accountLabel
@@ -274,12 +282,15 @@ export function execCliProviderStream({
     return Promise.reject(new Error('[cli_exec] execCliProviderStream requer onEvent (use execCliProvider p/ modo não-streaming)'))
   }
 
+  if (signal?.aborted) return Promise.reject(Object.assign(new Error('Generation aborted by user'), { name: 'AbortError' }))
+
   const commandExecuted = [bin, ...args].join(' ')
 
   return new Promise((resolve, reject) => {
     let child
     try {
       child = spawn(bin, args, {
+        ...processGroupOptions,
         cwd: cwd || undefined,
         env: env ? { ...process.env, ...env } : process.env,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -298,16 +309,18 @@ export function execCliProviderStream({
     let settled = false
     let timedOut = false
     let externallyAborted = false
+    let termination = null
 
     const finish = (fn) => { if (!settled) { settled = true; fn() } }
 
     const hasTimeout = timeoutMs != null && Number.isFinite(timeoutMs) && timeoutMs > 0
     const timeoutHandle = hasTimeout
-      ? setTimeout(() => { timedOut = true; child.kill('SIGTERM') }, timeoutMs)
+      ? setTimeout(() => { timedOut = true; termination ||= terminateProcessTree(child) }, timeoutMs)
       : null
 
-    const onAbort = () => { externallyAborted = true; child.kill('SIGTERM') }
+    const onAbort = () => { externallyAborted = true; termination ||= terminateProcessTree(child) }
     if (signal) signal.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
 
     const cleanup = () => {
       if (timeoutHandle) clearTimeout(timeoutHandle)
@@ -315,6 +328,7 @@ export function execCliProviderStream({
     }
 
     const emitLine = (line) => {
+      if (externallyAborted) return
       const trimmed = line.trim()
       if (!trimmed) return
       let obj
@@ -360,8 +374,9 @@ export function execCliProviderStream({
       })
     })
 
-    child.on('close', (code, killSignal) => {
+    child.on('close', async (code, killSignal) => {
       cleanup()
+      await termination
       if (lineBuf.length) emitLine(lineBuf) 
       finish(() => {
         const out = rawOut.toString('utf8').trim()
@@ -384,6 +399,7 @@ export function execCliProviderStream({
         wrapped.stderr = err
         wrapped.stdout = out
         wrapped.killed = timedOut || externallyAborted
+        if (externallyAborted) { wrapped.name = 'AbortError'; wrapped.noRetry = true }
         wrapped.signal = killSignal || null
         wrapped.failureKind = kind
         wrapped.account = accountLabel

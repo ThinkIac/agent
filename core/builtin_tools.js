@@ -5,6 +5,7 @@ import {
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { randomUUID } from 'crypto'
+import { getRuntimeExecutionContext } from './runtime_execution_context.js'
 import { createRequire } from 'module'
 import { execSync } from 'child_process'
 import { runInSandbox } from './sandbox.js'
@@ -805,7 +806,7 @@ async function handleSpawnAgent({ description, prompt, background = false, max_i
   const run = async () => {
     const { runAgent, forgetSession } = await import('./agent.js')
     try {
-      const result = await runAgent(prompt, subSessionId, null, null, { maxIterations })
+      const result = await runAgent(prompt, subSessionId, null, getRuntimeExecutionContext()?.signal, { maxIterations })
       return { success: true, result }
     } catch (e) {
       return { success: false, error: e.message }
@@ -901,6 +902,7 @@ async function handleRunEngineerTask({ description, task, background = true, acc
     try {
       const data = await runCliSlot(slot, slot.model, {
         system: ENGINEER_SYSTEM_PROMPT,
+        abortSignal: getRuntimeExecutionContext()?.signal,
         
         
         
@@ -1217,6 +1219,7 @@ const HANDLERS = {
 };
 
 export async function dispatchBuiltin(name, input, hostContext = {}) {
+  getRuntimeExecutionContext()?.signal?.throwIfAborted()
   if (HANDLERS[name]) return await HANDLERS[name](input, hostContext)
   if (_runtimeToolHandlers.has(name)) {
     try { return await _runtimeToolHandlers.get(name)(input) }

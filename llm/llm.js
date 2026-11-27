@@ -450,6 +450,7 @@ async function _runCliSlotInner(slot, chainModel, { system, messages, tools = []
       timeoutMs: opts?.timeout_ms,
       env: callEnv,
       accountLabel: slot.cli?.account ?? null,
+      signal: abortSignal,
       onEvent: (obj) => {
         if (isCodex) {
           const ct = obj?.type
@@ -584,6 +585,7 @@ async function _runCliSlotInner(slot, chainModel, { system, messages, tools = []
     timeoutMs: opts?.timeout_ms,
     env: callEnv, 
     accountLabel: slot.cli?.account ?? null,
+    signal: abortSignal,
   })
 
   
@@ -739,6 +741,7 @@ export async function callLLMStream({ system, messages, tools = [], model = null
       finally { releaseSlot() }
     } catch (e) {
       if (!canFailoverAfter(e)) throw e
+      if (abortSignal?.aborted) throw e
       lastError = e
       
       if (streamedAny) {
@@ -1216,6 +1219,7 @@ export async function callLLM({ system, messages, tools = [], model = null, requ
   try {
     return await attemptPool(usableSlots)
   } catch (narrowError) {
+    if (abortSignal?.aborted) throw narrowError
     if (!canFailoverAfter(narrowError)) throw narrowError
     if (explicitOverride) {
       throw sanitizePinnedProviderError(narrowError, { model, poolName: resolvedPoolName })
@@ -1400,7 +1404,7 @@ export async function callLLM({ system, messages, tools = [], model = null, requ
         return stampModel(data, { model: chainModel, provider: slot.provider })
 
       } catch (e) {
-        if (e.name === 'AbortError' || e.noRetry) throw e
+        if (abortSignal?.aborted || e.name === 'AbortError' || e.noRetry) throw e
         lastError = e
         if (!failureReported) {
           

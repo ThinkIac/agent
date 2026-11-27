@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { processGroupOptions, terminateProcessTree } from './process_tree.js'
 import { createInterface } from 'node:readline'
 import { classifyCliFailure } from './cli_failures.js'
 import { requestCodexApproval } from './codex_approval.js'
@@ -12,7 +13,7 @@ export function runCodexAppServer({ bin, args, input, cwd, env, model, sessionId
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(Object.assign(new Error('Codex cancelado.'), { name: 'AbortError' })); return }
     const lifecycle = new AbortController()
-    let child, lines, timer, killTimer, performedAction = false, done = false, seq = 0, stderr = '', text = '', threadId
+    let child, lines, timer, performedAction = false, done = false, seq = 0, stderr = '', text = '', threadId
     const pending = new Map()
     const items = new Map()
     let approvalsPending = 0, completedTurnId = null, activeTurnId = null
@@ -32,21 +33,20 @@ export function runCodexAppServer({ bin, args, input, cwd, env, model, sessionId
       pending.clear()
       lines?.close()
       child?.stdin.end()
-      child?.kill('SIGTERM')
-      if (child) {
-        killTimer = setTimeout(() => child.kill('SIGKILL'), 2000)
-        killTimer.unref()
-      }
+      const terminated = terminateProcessTree(child)
       if (error) {
         error.noRetry = performedAction
         error.stderr = stderr
         error.failureKind = classifyCliFailure(`${error.message} ${stderr}`)
-        reject(error)
+        terminated.then(() => reject(error), reject)
       } else {
         resolve({ choices: [{ message: { content: text, tool_calls: undefined }, finish_reason: 'stop' }], model, threadId, turnId: completedTurnId })
       }
     }
-    const abort = () => finish(Object.assign(new Error('Codex cancelado.'), { name: 'AbortError' }))
+    const abort = () => {
+      if (threadId && activeTurnId) send({ id: ++seq, method: 'turn/interrupt', params: { threadId, turnId: activeTurnId } })
+      finish(Object.assign(new Error('Codex cancelado.'), { name: 'AbortError' }))
+    }
     const send = (message) => { if (!done) child.stdin.write(`${JSON.stringify(message)}\n`) }
     const rpc = (method, params) => new Promise((resolve, reject) => {
       if (done) { reject(new Error('Codex encerrado.')); return }
@@ -55,7 +55,7 @@ export function runCodexAppServer({ bin, args, input, cwd, env, model, sessionId
       send({ id, method, params })
     })
     try {
-      child = spawn(bin, args, { cwd, env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] })
+      child = spawn(bin, args, { ...processGroupOptions, cwd, env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] })
     } catch (error) { finish(error); return }
     signal?.addEventListener('abort', abort, { once: true })
     if (signal?.aborted) { abort(); return }
@@ -64,11 +64,11 @@ export function runCodexAppServer({ bin, args, input, cwd, env, model, sessionId
     child.stdin.on('error', error => { if (!done) finish(error) })
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-16000) })
     child.on('close', code => {
-      clearTimeout(killTimer)
       if (!done) finish(new Error(`Codex encerrou antes de concluir o turno (${code}): ${stderr.slice(-2000)}`))
     })
     lines = createInterface({ input: child.stdout })
     const handle = async message => {
+      if (done) return
       if (message.id != null && !message.method) {
         const task = pending.get(message.id)
         if (!task) return
