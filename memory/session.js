@@ -96,6 +96,9 @@ export async function pushMessageAsync(sid, msg) {
 }
 export function getMessages(sid) { return getSession(sid).messages }
 
+// Persist extension metadata through the same writer as conversation history.
+export function saveSessionState(sid) { return sessionWriter.writeSync(getSession(sid)) }
+
 export async function replaceMessagesAsync(sid, messages) {
   const session = getSession(sid)
   session.messages = messages
