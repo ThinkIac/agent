@@ -1954,7 +1954,7 @@ async function agentLoop(system, sessionId, onProgress = null, abortSignal = nul
         })
       }
     }
-    const rawMsgs = getMessages(sessionId)
+    const rawMsgs = getMessages(sessionId).filter(message => !message.turnUpdateId)
     const sanitized = sanitizeMessages(rawMsgs)
     const finalizedMessages = finalizeForAPI(sanitized)
     const archivedContext = compactArchivedReads(finalizedMessages, {
