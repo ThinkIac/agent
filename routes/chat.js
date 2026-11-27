@@ -1,5 +1,6 @@
+import { cancelSessionPermissions } from '../core/pending_permissions.js'
 import { runAgent, activeSessions } from "../core/agent.js"
-import { hasPendingQuestion, resolvePendingQuestion } from "../core/pending_questions.js"
+import { hasPendingQuestion, resolvePendingQuestion, cancelPendingQuestion } from "../core/pending_questions.js"
 import { eventCall } from '../host/agent_host.js'
 import * as chatBus from '../core/chat_bus.js'
 import * as queue from '../core/message_queue.js'
@@ -517,7 +518,9 @@ export async function chatCancel(req, res) {
   const ctrl = activeStreamControllers.get(session_id)
   if (ctrl) {
     ctrl.abort()
-    activeStreamControllers.delete(session_id)
+    // Keep ownership until finally: cancellation must finish cleanup first.
+    cancelPendingQuestion(session_id, 'Turno cancelado.')
+    cancelSessionPermissions(session_id)
     return { success: true, message: `Sessão "${session_id}" cancelada.` }
   }
 

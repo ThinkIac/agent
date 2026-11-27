@@ -8,7 +8,7 @@ import { existsSync, readdirSync, statSync, readFileSync } from 'fs'
 import { createRequire } from 'module'
 import { evaluateAction } from '../../governance/service.js'
 import { isReadOnly } from '../../governance/lib/engine.js'
-import { withRuntimeExecutionContext } from './runtime_execution_context.js'
+import { withRuntimeExecutionContext, getRuntimeExecutionContext } from './runtime_execution_context.js'
 
 const PKG_DIR = dirname(fileURLToPath(import.meta.url))
 const AGENT_DIR = resolve(PKG_DIR, '..')
@@ -213,6 +213,8 @@ export function requiresRuntimeGovernance(packageName, toolName, args = {}) {
 }
 
 export async function invokeRuntimeTool(packageName, toolName, args = {}, governance = null) {
+  const signal = getRuntimeExecutionContext()?.signal
+  signal?.throwIfAborted()
   const action = {
     sessionId: governance?.sessionId,
     tool: 'run_runtime_tool',
@@ -261,7 +263,8 @@ export async function invokeRuntimeTool(packageName, toolName, args = {}, govern
   
   
   
-  return await withRuntimeExecutionContext(governance, () => tool._call(args))
+  signal?.throwIfAborted()
+  return await withRuntimeExecutionContext({ ...governance, signal }, () => tool._call(args))
 }
 
 

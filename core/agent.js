@@ -33,6 +33,7 @@ import {
   getPendingReset, clearPendingReset, executeReset
 } from './builtin_tools.js'
 import { listToolSchemas, invokeTool } from './registry.js'
+import { withRuntimeExecutionContext } from './runtime_execution_context.js'
 import { getMaxIterations, getConfig } from '../utils/config.js'
 import { sendProactive } from '../channels/channels.js'
 import { getSchedulerConfig } from '../utils/config.js'
@@ -1194,6 +1195,10 @@ async function generateMediaTurn(prompt, modality, sessionId, onProgress) {
 }
 
 export async function runAgent(message, sessionId = 'default', onProgress = null, abortSignal = null, opts = {}) {
+  return withRuntimeExecutionContext({ sessionId, signal: abortSignal }, () => runAgentTurn(message, sessionId, onProgress, abortSignal, opts))
+}
+
+async function runAgentTurn(message, sessionId = 'default', onProgress = null, abortSignal = null, opts = {}) {
   
   
   warmPricing()
@@ -1672,6 +1677,10 @@ async function agentLoop(system, sessionId, onProgress = null, abortSignal = nul
   }
 
   async function executeToolCall(tc, { preapproved = false } = {}) {
+    return withRuntimeExecutionContext({ sessionId, signal: abortSignal }, () => executeToolCallInTurn(tc, { preapproved }))
+  }
+
+  async function executeToolCallInTurn(tc, { preapproved = false } = {}) {
     const startTime = Date.now()
     const toolSchema = schemaForTool(tc.name)
     ensureOperationId(tc, toolSchema)
@@ -2042,6 +2051,7 @@ async function agentLoop(system, sessionId, onProgress = null, abortSignal = nul
       setPrivilegedContext({session_id: sessionId, tool_call: name});
       await pushMessage(sessionId, {role: 'assistant', content: '', tool_calls: [{id:tc.id,type:'function',function:{name,arguments:JSON.stringify(tc.input)}}]});
       const result = await executeToolCall(tc);
+      checkAborted();
       if(result.blocked)nativeBlocked=result;
       else coordinator.transition('model-selected', {iteration:iterations,nativeTool:true});
       if (!result.outcome.ok) throw new Error(result.outcome.error?.message || 'Ferramenta bloqueada.');
@@ -2057,12 +2067,14 @@ async function agentLoop(system, sessionId, onProgress = null, abortSignal = nul
           return callWithSpecialistFallback(opts => modelGateway.legacy({ ...opts, mode: 'stream' }), {
             system: currentSystem, messages, tools, requirements, abortSignal, sessionId, cwd: execution.cwd, cliOpts,
             onToken: (delta) => {
+              if (abortSignal?.aborted) return
               iterationProducedOutput = true
               if (onProgress) onProgress({ type: 'token', text: delta })
             },
             
             
             onProgress: (evt) => {
+              if (abortSignal?.aborted) return
               if (evt.type === 'tool-step' || evt.type === 'tool-result' || evt.type === 'reasoning') iterationProducedOutput = true
               if (evt.type === 'tool-result') noteProgress(evt.name, evt.isError ? 'failed' : 'returned a result', evt.content)
               if (evt.type === 'tool-result' && evt.threadId && evt.itemId) recordBagEvent(getConfig(), durableRuns.get(durableRunId), {
@@ -2090,6 +2102,7 @@ async function agentLoop(system, sessionId, onProgress = null, abortSignal = nul
         },
       })
     } finally { turnTools?.close(); }
+    checkAborted()
     if(nativeBlocked){
       const content=nativeBlocked.confirmation
         ? await confirmationIntro(nativeBlocked.confirmation)+'\n\n```thinkiac\n'+JSON.stringify(nativeBlocked.confirmation)+'\n```'
