@@ -77,6 +77,17 @@ const { renderTemplate } = inflectPkg
 const tokenEstimate = (value) => Math.ceil(String(value || '').length / 4)
 const modelGateway = new ModelGateway({ call: callLLM, stream: callLLMStream })
 
+function revealModelResponse(response, privacy) {
+  if (!privacy || !response || typeof response !== 'object') return response
+  return { ...response, choices: Array.isArray(response.choices) ? response.choices.map(choice => {
+    const message = choice?.message; if (!message || typeof message !== 'object') return choice
+    const next = { ...message }
+    for (const key of ['content', 'reasoning', 'reasoning_content']) if (typeof next[key] === 'string') next[key] = privacy.revealText(next[key])
+    if (Array.isArray(next.tool_calls)) next.tool_calls = next.tool_calls.map(call => call?.function && typeof call.function.arguments === 'string' ? { ...call, function: { ...call.function, arguments: privacy.revealText(call.function.arguments) } } : call)
+    return { ...choice, message: next }
+  }) : response.choices }
+}
+
 
 function shellPatternsForHook(command) {
   if (typeof command !== 'string' || command.length > 2_000 || /[\r\n`$]|\b(token|secret|password|api[_-]?key|authorization|bearer|cookie|credential)\b/i.test(command)) return []
@@ -1363,7 +1374,7 @@ async function runAgentTurn(message, sessionId = 'default', onProgress = null, a
     const response = await agentLoop(builtSystem.prompt, sessionId, onProgress, abortSignal, durableRunId, {
       recoveryTool: opts.recoveryTool,
       recoveryNotice: opts.recoveryNotice,
-    }, { observingProgress, progressPrivacy, cwd: opts.cwd, model: opts.model, requiredTools: opts.requiredTools, skillRequiredTools: builtSystem.skillRequiredTools, toolMode: opts.toolMode, toolAllowlist: opts.toolAllowlist, scopedTools: opts.scopedTools, onWork: opts.onWork, governance: opts.governance, maxActions: opts.maxActions, origin: opts.origin, presenceKind: opts.presenceKind, allowApprovedAction: opts.allowApprovedAction,
+    }, { observingProgress, progressPrivacy, privacyForSession, cwd: opts.cwd, model: opts.model, requiredTools: opts.requiredTools, skillRequiredTools: builtSystem.skillRequiredTools, toolMode: opts.toolMode, toolAllowlist: opts.toolAllowlist, scopedTools: opts.scopedTools, onWork: opts.onWork, governance: opts.governance, maxActions: opts.maxActions, origin: opts.origin, presenceKind: opts.presenceKind, allowApprovedAction: opts.allowApprovedAction,
       protectedSkillNames: builtSystem.inputTrace?.sources?.filter(source => source.type === 'agent_md' && source.activation === 'explicit_development').map(source => source.name).filter(Boolean) || [] });
 
     const resolvedModel = _resolvedModels.get(sessionId) || null
@@ -1976,6 +1987,8 @@ async function agentLoop(system, sessionId, onProgress = null, abortSignal = nul
       maxTokens: getConfig()?.bag?.history_max_tokens,
     })
     const messages = history.messages
+    const privacy = execution.privacyForSession?.(sessionId)
+    const providerMessages = privacy ? privacy.protect(messages) : messages
     if (archivedContext.archived || archivedContext.overBudget) $('agent:bag:archive', { sessionId, runId: durableRunId, archived: archivedContext.archived, overBudget: archivedContext.overBudget, inputUpperBound: archivedContext.inputUpperBound })
     if (bagContext) $('agent:bag:context', { sessionId, runId: durableRunId, iteration: iterations, ...bagContext.metrics })
     if (history.compactedTurns || history.overBudget) $('agent:bag:history', { sessionId, runId: durableRunId, iteration: iterations,
@@ -2065,7 +2078,7 @@ async function agentLoop(system, sessionId, onProgress = null, abortSignal = nul
         iterationProducedOutput = false
         if (useTokenStream) {
           return callWithSpecialistFallback(opts => modelGateway.legacy({ ...opts, mode: 'stream' }), {
-            system: currentSystem, messages, tools, requirements, abortSignal, sessionId, cwd: execution.cwd, cliOpts,
+            system: currentSystem, messages: providerMessages, tools, requirements, abortSignal, sessionId, cwd: execution.cwd, cliOpts,
             onToken: (delta) => {
               if (abortSignal?.aborted) return
               iterationProducedOutput = true
@@ -2085,7 +2098,7 @@ async function agentLoop(system, sessionId, onProgress = null, abortSignal = nul
             },
           }, specialistModelSpec)
         }
-        return callWithSpecialistFallback(opts => modelGateway.legacy({ ...opts, mode: 'call' }), { system: currentSystem, messages, tools, requirements, abortSignal, sessionId, cwd: execution.cwd, cliOpts }, specialistModelSpec)
+        return callWithSpecialistFallback(opts => modelGateway.legacy({ ...opts, mode: 'call' }), { system: currentSystem, messages: providerMessages, tools, requirements, abortSignal, sessionId, cwd: execution.cwd, cliOpts }, specialistModelSpec)
       }, undefined, {
         signal: abortSignal,
         shouldRetry: error => {
@@ -2112,6 +2125,7 @@ async function agentLoop(system, sessionId, onProgress = null, abortSignal = nul
       return content;
     }
 
+    response = revealModelResponse(response, privacy)
     $('agent:llm-end', { sessionId, iteration: iterations, response });
     coordinator.transition('model-responded', { iteration: iterations, model: response?.model, provider: response?.provider })
     
